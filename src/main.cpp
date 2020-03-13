@@ -3,18 +3,20 @@ using namespace okapi;
 
 //globals
 int autonToUse = 1; //run auton 1 by default
-bool trayInSetPosition = false;
 Controller masterController;    //controller for okapi
 
 //constants
 const int SCR_WIDTH = 480;
 const int SCR_HEIGHT = 272;
-const int TRAY_MAX = 480;
-const int TRAY_SCORE_CUBES = 135;
-const int ARM_PICKUP_HEIGHT = 60;
-const int ARM_PICKUP_AUTON = 45;
-const int ARM_LOWSCORE_HEIGHT = 440;
-const int ARM_HIGHSCORE_HEIGHT = 585;
+const int TRAY_MAX = 3700;
+const int TRAY_SCORE_CUBES = 900;
+const int ARM_PICKUP_HEIGHT = 260; //THE LESS ACCURATE VALUE. for quick n' dirty movements
+const int ARM_PICKUP_AUTON = 260; //ACCURATE value. use this plese. :)
+const int ARM_LOWSCORE_HEIGHT = 2500;
+const int ARM_HIGHSCORE_HEIGHT = 3100;
+
+const int ARM_TRAY_OPEN_HEIGHT = 2000;
+const int TRAY_TRAY_OPEN_HEIGHT = 700;
 
 //init start
 //objects defined here
@@ -93,6 +95,14 @@ void initialize() {
   //set label text and align
   lv_obj_align(autonDescrpt, NULL, LV_ALIGN_IN_BOTTOM_LEFT, 0, -50);
   lv_obj_set_width(autonDescrpt, SCR_WIDTH - 100);
+
+  //calibrate the Imu
+  imuSensor.reset();
+  pros::delay(200);
+  while (imuSensor.is_calibrating()) {
+    lv_label_set_text(autonDescrpt, "STOP, IMU CALIBRATING");
+    pros::delay(20);
+  }
   lv_label_set_text(autonDescrpt, "No autonomous will be run");
 }
 
@@ -100,6 +110,7 @@ void initialize() {
 
 void disabled() {
   //inform the user which auton will be ran if a button is pressed
+  lv_label_set_text(autonDescrpt, NULL);//update the label
   while(1) {
   if (autonToUse == 0)
     lv_label_set_text(autonDescrpt, "No autonomous will be run\nRobot is currently disabled");
@@ -117,205 +128,312 @@ void disabled() {
   }
 }
 
-void competition_initialize() {}
+void competition_initialize() {
+  //inform the user which auton will be ran if a button is pressed
+  lv_label_set_text(autonDescrpt, NULL);//update the label
+  while(1) {
+  if (autonToUse == 0)
+    lv_label_set_text(autonDescrpt, "No autonomous will be run\nRobot is currently disabled");
+  else if (autonToUse == 1)
+    lv_label_set_text(autonDescrpt, "Blue Auton 1 will be run\nRobot is currently disabled");
+  else if (autonToUse == 2)
+    lv_label_set_text(autonDescrpt, "Red Auton 1 will be run\nRobot is currently disabled");
+  else if (autonToUse == 3)
+    lv_label_set_text(autonDescrpt, "Blue Auton 2 will be run\nRobot is currently disabled");
+  else if (autonToUse == 4)
+    lv_label_set_text(autonDescrpt, "Red Auton 2 will be run\nRobot is currently disabled");
+  else if (autonToUse == 5)
+    lv_label_set_text(autonDescrpt, "Driver Skills\nRobot is currently disabled");
+  pros::delay(250);
+  }
+}
 
 
 //auton start
 
 //making the controllers, also used in opcontrol
-auto chassis = ChassisControllerFactory::create({18,20}, {-17,-19},
-                AbstractMotor::gearset::green, {10.6_cm, 23_cm});
-auto rollers = AsyncControllerFactory::velIntegrated({1,-2});
-auto trayControl = AsyncControllerFactory::posIntegrated(-6);
-auto armControl = AsyncControllerFactory::posIntegrated(-3);
+auto chassis = ChassisControllerBuilder()
+                .withMotors({18,20},{17,19})
+                .withDimensions(AbstractMotor::gearset::green, {{10.6_cm,23_cm}, imev5GreenTPR})
+                .build();
+auto rollers = AsyncVelControllerBuilder().withMotor({4,2}).build();
+auto trayControl = AsyncPosControllerBuilder().withMotor(6).build();
+auto armControl = AsyncPosControllerBuilder().withMotor(3).build();
 
 //making autonomous functions to allow for multiple possible auton. routines
 void auton1(bool mirrorTurns) {
-  unbrakeArm(); //do not brake the arm to allow okapi to work
-  //blue by default, mirror turns for red if mirrorTurns = true
-  chassis.setTurnsMirrored(mirrorTurns);
-  chassis.setBrakeMode(AbstractMotor::brakeMode::coast);
+  unbrakeArm();
+  brakeRollers(true);
 
-  chassis.setMaxVelocity(120);
-  chassis.moveDistance(25_cm);
-  pros::delay(300);
-  //set arm to pickup position
-  armControl.setTarget(ARM_PICKUP_AUTON);
-  armControl.waitUntilSettled();
-  //now turn on rollers, then move forward to pick up cubes
-  chassis.setMaxVelocity(50);
-  rollers.setTarget(115);  //max speed for green cartridge = 200
-  chassis.moveDistance(85_cm);
-  chassis.waitUntilSettled();
-  //now stop rollers, move back and turn torwards small goal
-  rollers.setTarget(0);
-  chassis.setMaxVelocity(105);
-  chassis.moveDistance(-50_cm);
-  chassis.setMaxVelocity(80);
-  chassis.turnAngle(-350); //240 = 90 degrees
-  chassis.waitUntilSettled();
-  //now move slowly torwards goal and move rollers out to set cubes
-  chassis.moveDistance(50_cm);
-  chassis.waitUntilSettled();
-  rollers.setTarget(-50);
-  pros::delay(400);
-  rollers.setTarget(0);
-  //now move the tray forward, and place the cubes
-  trayControl.setMaxVelocity(50);
-  rollers.setTarget(-10);
-  pros::delay(30);
-  armControl.setTarget(0);
-  armControl.waitUntilSettled();
-  trayControl.setTarget(TRAY_MAX);
-  trayControl.waitUntilSettled();
-  rollers.setTarget(0);
+  //deploy
+  trayControl->setTarget(TRAY_TRAY_OPEN_HEIGHT);
+  armControl->setTarget(ARM_TRAY_OPEN_HEIGHT);
+  armControl->waitUntilSettled();
+
+  //set arm and rollers, then pick up first row
+  armControl->setTarget(ARM_PICKUP_AUTON);
+  armControl->waitUntilSettled();
+  trayControl->setTarget(0);
+  rollers->setTarget(180);
+  driveDistance(100,80);
+  rollers->setTarget(0);
+  pros::delay(250);
+  //backup to goal
+  driveDistance(-48,100);
+
+  pros::delay(350);
+  turn(-imuSensor.get_rotation()-135,127,mirrorTurns);
+  //turn(-135,80,false);
+
+  //move forward to goal, then set stack
+  driveDistance(45,100);
+  rollers->setTarget(-55);
+  pros::delay(500);
+  rollers->setTarget(0);
+  brakeRollers(false);
+  armControl->setTarget(0);
+  pros::delay(50);
+  trayControl->setMaxVelocity(90);
+  trayControl->setTarget(TRAY_MAX);
+  trayControl->waitUntilSettled();
+  tank(30,30);
+  pros::delay(750);
+  tank(0,0);
+  pros::delay(250);
+
+  //back away, move tray down
+  trayControl->setMaxVelocity(200);
+  trayControl->setTarget(0);
+  rollers->setTarget(-70);
   pros::delay(100);
-  chassis.setMaxVelocity(20);
-  chassis.moveDistance(5_cm);
-  chassis.setMaxVelocity(80);
-  //now move away with rollers
-  rollers.setTarget(-115);
-  chassis.moveDistance(-27_cm);
-  rollers.setTarget(0);
+  driveDistance(-20,40);
+  rollers->setTarget(0);
+}
+
+void redAuton1(bool mirrorTurns) {
+  unbrakeArm();
+  brakeRollers(true);
+
+  //deploy
+  trayControl->setTarget(TRAY_TRAY_OPEN_HEIGHT);
+  armControl->setTarget(ARM_TRAY_OPEN_HEIGHT);
+  armControl->waitUntilSettled();
+
+  //set arm and rollers, then pick up first row
+  armControl->setTarget(ARM_PICKUP_AUTON);
+  armControl->waitUntilSettled();
+  trayControl->setTarget(0);
+  rollers->setTarget(180);
+  driveDistance(100,80);
+  rollers->setTarget(0);
+  pros::delay(250);
+  //backup to goal
+  driveDistance(-44,100);
+
+  pros::delay(350);
+  turn(-imuSensor.get_rotation()-135,127,mirrorTurns);
+  //turn(-135,80,false);
+
+  //move forward to goal, then set stack
+  driveDistance(45,100);
+  rollers->setTarget(-55);
+  pros::delay(500);
+  rollers->setTarget(0);
+  brakeRollers(false);
+  armControl->setTarget(0);
+  pros::delay(50);
+  trayControl->setMaxVelocity(90);
+  trayControl->setTarget(TRAY_MAX);
+  trayControl->waitUntilSettled();
+  tank(30,30);
+  pros::delay(750);
+  tank(0,0);
+  pros::delay(250);
+
+  //back away, move tray down
+  trayControl->setMaxVelocity(200);
+  trayControl->setTarget(0);
+  rollers->setTarget(-70);
+  pros::delay(100);
+  driveDistance(-20,40);
+  rollers->setTarget(0);
 }
 
 void auton2(bool mirrorTurns) {
-  unbrakeArm(); //do not brake the arm to allow okapi to work
-  //blue by default, mirror turns for red if mirrorTurns = true
-  chassis.setTurnsMirrored(mirrorTurns);
-  chassis.setBrakeMode(AbstractMotor::brakeMode::coast);
+  unbrakeArm();
+  brakeRollers(true);
 
-  chassis.setMaxVelocity(120);
-  chassis.moveDistance(25_cm);
-  pros::delay(300);
-  //set arm to pickup position
-  armControl.setTarget(ARM_PICKUP_AUTON);
-  armControl.waitUntilSettled();
-  //now turn on rollers, then move forward to pick up cubes
-  chassis.setMaxVelocity(50);
-  rollers.setTarget(115);  //max speed for green cartridge = 200
-  chassis.moveDistance(85_cm);
-  chassis.waitUntilSettled();
-  //now stop rollers, move back and turn torwards small goal
-  rollers.setTarget(0);
-  chassis.setMaxVelocity(105);
-  chassis.moveDistance(-50_cm);
-  chassis.setMaxVelocity(80);
-  chassis.turnAngle(-350); //240 = 90 degrees
-  chassis.waitUntilSettled();
-  //now move slowly torwards goal and move rollers out to set cubes
-  chassis.moveDistance(50_cm);
-  chassis.waitUntilSettled();
-  rollers.setTarget(-50);
-  pros::delay(400);
-  rollers.setTarget(0);
-  //now spit a cube out
-  rollers.setTarget(-100);
+  //deploy
+  trayControl->setTarget(TRAY_TRAY_OPEN_HEIGHT);
+  armControl->setTarget(ARM_TRAY_OPEN_HEIGHT);
+  armControl->waitUntilSettled();
+
+  //set arm and rollers, then pick up first row
+  armControl->setTarget(ARM_PICKUP_AUTON);
+  armControl->waitUntilSettled();
+  trayControl->setTarget(0);
+  rollers->setTarget(180);
+  driveDistance(45,80);
+  rollers->setTarget(0);
+  pros::delay(250);
+
+  //drive back, turn to big goal
+  driveDistance(-33,80);
+  turn(90,127,mirrorTurns);
+
+  //drive to goal, set stack
+  driveDistance(62,80);
+  rollers->setTarget(-55);
   pros::delay(500);
-  rollers.setTarget(0);
-  chassis.moveDistance(-20_cm);
+  rollers->setTarget(0);
+  brakeRollers(false);
+  armControl->setTarget(0);
+  pros::delay(50);
+  trayControl->setMaxVelocity(90);
+  trayControl->setTarget(TRAY_MAX);
+  trayControl->waitUntilSettled();
+  tank(30,30);
+  pros::delay(750);
+  tank(0,0);
+  pros::delay(250);
+
+  //back away, move tray down
+  trayControl->setMaxVelocity(200);
+  trayControl->setTarget(0);
+  rollers->setTarget(-70);
+  pros::delay(100);
+  driveDistance(-20,40);
+  rollers->setTarget(0);
 }
 
 void driverSkills() {
-  unbrakeArm(); //do not brake the arm to allow okapi to work
-  chassis.setMaxVelocity(90);
-  //blue by default, mirror turns for red if mirrorTurns = true
-  chassis.setBrakeMode(AbstractMotor::brakeMode::coast);
+  unbrakeArm();
+  brakeRollers(true);
 
-  //push the preload forward then move back
-  chassis.moveDistance(20_cm);
-  //chassis.moveDistance(-5_cm);
-  //now move arm up and down to unleash the tray
-  armControl.setTarget(350);
-  armControl.waitUntilSettled();
-  armControl.setTarget(ARM_PICKUP_AUTON);
-  armControl.waitUntilSettled();
-  chassis.waitUntilSettled();
-  //now turn on rollers, then move forward to pick up cubes
-  chassis.setMaxVelocity(60);
-  rollers.setTarget(115);  //max speed for green cartridge = 200
+  //deploy
+  trayControl->setTarget(TRAY_TRAY_OPEN_HEIGHT);
+  armControl->setTarget(ARM_TRAY_OPEN_HEIGHT);
+  armControl->waitUntilSettled();
+
+  //set arm and rollers, then pick up first row
+  armControl->setTarget(ARM_PICKUP_AUTON);
+  armControl->waitUntilSettled();
+  trayControl->setTarget(0);
+  rollers->setTarget(180);
+  driveDistance(100,80);
+  rollers->setTarget(0);
+
+  //backup to goal
+  driveDistance(-48,100);
+  pros::delay(350);
+  turn(-imuSensor.get_rotation()-135,127,false);
+  //turn(-135,80,false);
+
+  //move forward to goal, then set stack
+  driveDistance(45,100);
+  rollers->setTarget(-55);
   pros::delay(500);
-  chassis.moveDistance(82_cm);
-  chassis.waitUntilSettled();
-  //now stop rollers, move back and turn torwards small goal
-  rollers.setTarget(0);
-  chassis.setMaxVelocity(90);
-  chassis.moveDistance(-35_cm);
-  chassis.setMaxVelocity(80);
-  chassis.turnAngle(-350);
-  chassis.waitUntilSettled();
-  //now move slowly torwards goal and outtake cubes to lower them
-  chassis.moveDistance(42_cm);
-  chassis.waitUntilSettled();
-  rollers.setTarget(-50);
-  pros::delay(400);
-  rollers.setTarget(0);
-  //now move the tray forward, and place the cubes
-  unbrakeRollers();
-  trayControl.setMaxVelocity(30);
-  trayControl.setTarget(TRAY_MAX);
-  rollers.setTarget(-20);
-  trayControl.waitUntilSettled();
-  rollers.setTarget(0);
-  pros::delay(100);
-  chassis.setMaxVelocity(20);
-  chassis.moveDistance(5_cm);
-  pros::delay(1000);
-  chassis.setMaxVelocity(80);
-  armControl.setTarget(0);
-  armControl.waitUntilSettled();
-  pros::delay(100);
-  //now move away and move tray down
-  chassis.setMaxVelocity(45);
-  chassis.moveDistance(-29_cm);
-  chassis.setMaxVelocity(60);
-  trayControl.setMaxVelocity(80);
-  trayControl.setTarget(0);
-  trayControl.waitUntilSettled();
-  armControl.setTarget(ARM_PICKUP_HEIGHT);
-  //now turn towards tower and move to pick up the purple cube
-  chassis.turnAngle(-140_deg);
-  chassis.moveDistance(63_cm);
-  //now pick up purple cube
-  rollers.setTarget(110);
-  chassis.moveDistance(4_cm);
-  rollers.setTarget(0);
-  //now back up, move tray forward and arm up to scoring position
-  chassis.moveDistance(-5_cm);
-  trayControl.setMaxVelocity(50);
-  trayControl.setTarget(TRAY_SCORE_CUBES);
-  trayControl.waitUntilSettled();
-  armControl.setTarget(ARM_HIGHSCORE_HEIGHT);
-  armControl.waitUntilSettled();
-  chassis.moveDistance(14_cm);
-  //set the cube
-  rollers.setTarget(-70);
-  pros::delay(1500);
-  rollers.setTarget(0);
-  //backup, turn towards other small goal to pick up green cube
-  chassis.setMaxVelocity(60);
-  chassis.moveDistance(-52_cm);
-  armControl.setTarget(ARM_PICKUP_HEIGHT);
-  chassis.turnAngle(-90_deg);
-  chassis.moveDistance(62_cm);
-  //now pick up the green cubes
-  rollers.setTarget(110);
-  chassis.moveDistanceAsync(5_cm);
-  pros::delay(500);
-  rollers.setTarget(0);
-  chassis.waitUntilSettled();
+  rollers->setTarget(0);
+  brakeRollers(false);
+  armControl->setTarget(0);
+  pros::delay(50);
+  trayControl->setMaxVelocity(90);
+  trayControl->setTarget(TRAY_MAX);
+  trayControl->waitUntilSettled();
+  tank(30,30);
+  pros::delay(750);
+  tank(0,0);
   pros::delay(250);
-  rollers.setTarget(0);
-  //move arm to scoring position
-  chassis.moveDistance(-5_cm);
-  armControl.setTarget(ARM_LOWSCORE_HEIGHT);
-  armControl.waitUntilSettled();
-  chassis.moveDistance(8_cm);
-  //now move forward and score the cube
-  rollers.setTarget(-70);
+
+  //back away, move tray down
+  rollers->setTarget(-70);
+  pros::delay(100);
+  driveDistance(-20,40);
+  rollers->setTarget(0);
+  driveDistance(-10,80);
+  trayControl->setMaxVelocity(200);
+  trayControl->setTarget(0);
+
+  //turn to pick up purple cube, pick it up
+  turn(-imuSensor.get_heading()+90,127,false);
+  //turn(-135,110,false);
+  trayControl->waitUntilSettled();
+  armControl->setTarget(ARM_PICKUP_AUTON);
+  rollers->setTarget(180);
+  pros::delay(400); //make sure chassis drives straight
+  driveDistance(80,70);
   pros::delay(1000);
-  rollers.setTarget(0);
-  chassis.moveDistance(-20_cm);
+  rollers->setTarget(-50);
+  pros::delay(750);
+  rollers->setTarget(0);
+
+  //move arm up, put cube in tower
+  trayControl->setTarget(TRAY_SCORE_CUBES);
+  armControl->setTarget(ARM_HIGHSCORE_HEIGHT);
+  armControl->waitUntilSettled();
+  turn(90-imuSensor.get_heading(),127,false); //straighten up
+  driveDistance(10,80);
+  pros::delay(1000);
+  rollers->setTarget(-80);
+  pros::delay(1000);
+  rollers->setTarget(0);
+
+  //back up, arm down, turn 90 degrees
+  driveDistance(-10,80);
+  armControl->setTarget(ARM_PICKUP_AUTON);
+  armControl->waitUntilSettled();
+  trayControl->setTarget(0);
+  turn(-45,127,false);
+  driveDistance(-10,80);
+  turn(-45,127,false);
+
+  //pickup next cube
+  rollers->setTarget(180);
+  driveDistance(25,80);
+  pros::delay(1000);
+  rollers->setTarget(-50);
+  pros::delay(750);
+  rollers->setTarget(0);
+
+  //turn to alliance goal, set cube
+  turn(-(360+imuSensor.get_rotation())-80,127,false);
+  //turn(-80,127,false);
+  driveDistance(60,80);
+  trayControl->setTarget(TRAY_SCORE_CUBES);
+  armControl->setTarget(ARM_LOWSCORE_HEIGHT);
+  armControl->waitUntilSettled();
+  driveDistance(20,80);
+  pros::delay(1000);
+  rollers->setTarget(-90);
+  pros::delay(1000);
+  rollers->setTarget(0);
+
+  //back away, move arm down, turn to final goal
+  driveDistance(-45,80);
+  armControl->setTarget(ARM_PICKUP_AUTON);
+  armControl->waitUntilSettled();
+  trayControl->setTarget(0);
+  turn(80,100,false);
+
+  //drive to cube, pick it up
+  rollers->setTarget(180);
+  driveDistance(50,80);
+  pros::delay(1000);
+  rollers->setTarget(-50);
+  pros::delay(750);
+  rollers->setTarget(0);
+  driveDistance(-15,80);
+
+  //set cube
+  trayControl->setTarget(TRAY_SCORE_CUBES);
+  armControl->setTarget(ARM_LOWSCORE_HEIGHT);
+  armControl->waitUntilSettled();
+  driveDistance(15,80);
+  pros::delay(1000);
+  rollers->setTarget(-90);
+  pros::delay(1000);
+  rollers->setTarget(0);
+  driveDistance(-20,80);
 }
 
 void autonomous() {
@@ -327,7 +445,7 @@ void autonomous() {
 			auton1(false); //false to not mirror turns
 			break;
     case 2:
-      auton1(true); //true to mirror turns
+      redAuton1(true); //true to mirror turns
       break;
     case 3:
       auton2(false);
@@ -349,51 +467,49 @@ void armControlFunc(void *) {
 	pros::Controller master (pros::E_CONTROLLER_MASTER);
   setMotorBrakes();
   bool rightToggle = false;
-  bool leftToggle  = true;
+  bool leftToggle  = false;
+
 
 	while (1) {
-    //moving arm up and down manually
-  	if (master.get_digital(DIGITAL_L1))
-			setArm(100);
-  	else if (master.get_digital(DIGITAL_L2))
-  		setArm(-100);
-    //bring arm to pickup height when Y is pressed
-    else if (master.get_digital(DIGITAL_Y)) {
-      while (getArmPos() < 80)
-        setArm(50);
-      while (getArmPos() > ARM_PICKUP_HEIGHT)
-        setArm(-40);
-    }
-    //bring arm to 0 when a is pressed
-    else if (master.get_digital(DIGITAL_A)) {
-      while (getArmPos() > 0)
-        setArm(-80);
-    }
+    //ensure that the macros are not enabled
+    //if (!leftToggle && !rightToggle) {
+      //moving arm up and down manually
+    	if (master.get_digital(DIGITAL_L1))
+  			setArm(50);
+    	else if (master.get_digital(DIGITAL_L2))
+    		setArm(-50);
+      //bring arm to pickup height when Y is pressed
+      else if (master.get_digital(DIGITAL_Y)) {
+        moveArmTo(ARM_PICKUP_AUTON,50);
+      }
+      //bring arm to 0 when a is pressed
+      else if (master.get_digital(DIGITAL_A)) {
+          moveArmTo(0,80);
+      }
+    //}
     //bring arm to high scoring height if right is pressed, back to pickup if pressed again
-    else if (master.get_digital(DIGITAL_RIGHT)) {
+    else if (master.get_digital(DIGITAL_RIGHT) && !leftToggle) {
       rightToggle = !rightToggle;
       if (rightToggle) {
         while (getArmPos() < ARM_HIGHSCORE_HEIGHT)
-          setArm(70);
-          pros::delay(20);
+          setArm(100);
       }
-      else {
+      if (!rightToggle) {
         while (getArmPos() > ARM_PICKUP_HEIGHT)
-          setArm(-70);
+          setArm(-100);
           pros::delay(20);
       }
     }
     //bring arm to low scoring height if left is pressed, back to pickup if pressed again
-    else if (master.get_digital(DIGITAL_LEFT)) {
+    else if (master.get_digital(DIGITAL_LEFT) && !rightToggle) {
       leftToggle = !leftToggle;
       if (leftToggle) {
         while (getArmPos() < ARM_LOWSCORE_HEIGHT)
-          setArm(70);
-          pros::delay(20);
+          setArm(100);
       }
-      else {
+      if (!leftToggle) {
         while (getArmPos() > ARM_PICKUP_HEIGHT)
-          setArm(-70);
+          setArm(-100);
           pros::delay(20);
       }
     }
@@ -417,16 +533,15 @@ void trayControlFunc(void *) {
 		//if the a button is pressed, toggle the tray in and out.
 		if (master.get_digital(DIGITAL_A)) {
 			aToggle = !aToggle;
-      trayInSetPosition = !trayInSetPosition;
 			if (aToggle) {
         unbrakeRollers();
         while (getTrayPosition() < TRAY_MAX * (3/4.0)) {
-          setTray(50);
-          setRollers(-10);
+          setTray(100);
+        //  setRollers(-20);
         }
         while (getTrayPosition() < TRAY_MAX) {
-          setTray(30);
-          setRollers(-10);
+          setTray(80);
+        //  setRollers(-15);
         }
         setRollers(0);
         setTray(0);
@@ -434,7 +549,7 @@ void trayControlFunc(void *) {
 			else {
         unbrakeRollers();
         while (getTrayPosition() > 0.0) {
-          setTray(-80);
+          setTray(-200);
         }
         setTray(0);
         setMotorBrakes();
@@ -443,17 +558,17 @@ void trayControlFunc(void *) {
 		}
 
 		//if right or left arrow is pressed, and the tray is not in setting position, move tray to allow for cube scoring
-	  else if ((master.get_digital(DIGITAL_RIGHT) || master.get_digital(DIGITAL_LEFT)) && !trayInSetPosition) {
+	  else if ((master.get_digital(DIGITAL_RIGHT) || master.get_digital(DIGITAL_LEFT)) && !aToggle) {
       scoreToggle = !scoreToggle;
       if (scoreToggle) {
+        while (!(getArmPos() >= 65)) pros::delay(20); //wait for arm to be at right height
         while (getTrayPosition() < TRAY_SCORE_CUBES)
-          setTray(60);
-          pros::delay(15);
+          setTray(200);
       }
-      else {
-        pros::delay(500);
+      if (!scoreToggle) {
+        pros::delay(750);
         while (getTrayPosition() > 0.0)
-          setTray(-60);
+          setTray(-200);
       }
 		}
 
@@ -470,14 +585,11 @@ void rollControlFunc(void*) {
   while(1) {
     //moving rollers based on trigger buttons
     if (master.get_digital(DIGITAL_R2))
-			setRollers(-30);
-		else if (master.get_digital(DIGITAL_R1))
-			setRollers(110);
-    //macros
-    else if (master.get_digital(DIGITAL_UP))
-      setRollers(110);
+			setRollers(-60);
+		else if (master.get_digital(DIGITAL_R1) || master.get_digital(DIGITAL_UP))
+      setRollers(150);
     else if (master.get_digital(DIGITAL_DOWN))
-      setRollers(-120);
+      setRollers(-100);
     //if no button pressed, don't move
 		else
 			setRollers(0);
@@ -532,6 +644,7 @@ void opcontrol() {
 
     std::cout<<"arm at: " << getArmPos()<<std::endl;
     std::cout<<"tray at: " << getTrayPosition()<<std::endl;
+    std::cout<<"imu at: " << imuSensor.get_rotation()<<std::endl;
 
     pros::delay(500);
   }
@@ -554,8 +667,7 @@ void opcontrol() {
 
 	while (true) {
 		//tank control
-		chassis.tank(masterController.getAnalog(ControllerAnalog::leftY) * maxPercentSpeed,
-                 masterController.getAnalog(ControllerAnalog::rightY) * maxPercentSpeed);
+		tank(master.get_analog(pros::E_CONTROLLER_ANALOG_LEFT_Y)*maxPercentSpeed,master.get_analog(pros::E_CONTROLLER_ANALOG_RIGHT_Y)*maxPercentSpeed);
 		//if B is pressed, toggle between speeds
 		if (master.get_digital(DIGITAL_B)) {
 			bWasPressed = !bWasPressed;
@@ -572,13 +684,11 @@ void opcontrol() {
         master.set_text(0,0,"Speed:    80%"); //insure that it is printed
 			}
 		}
-    //macros for picking up cubes/backing away from stacks, also in roller task
-    if (master.get_digital(DIGITAL_UP) || master.get_digital(DIGITAL_X)) {
-      chassis.tank(0.40, 0.40);
-    }
-    else if (master.get_digital(DIGITAL_DOWN)) {
-      chassis.tank(-0.55, -0.55);
-    }
+    //macros for picking up cubes/backing away from stacks, related in roller task
+    if (master.get_digital(DIGITAL_UP) || master.get_digital(DIGITAL_X))
+      tank(127*0.4,127*0.4);
+    else if (master.get_digital(DIGITAL_DOWN))
+      tank(-127*0.4,-127*0.4);
 
 		//delay to prevent resources from being wasted
 		pros::delay(20);
